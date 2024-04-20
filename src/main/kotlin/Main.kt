@@ -11,8 +11,8 @@ import kotlin.random.Random
 fun main() {
     println("Generating...")
 
-    val maze = MazeGenerator()
-    maze.generate()
+    val maze: MazeInterface = MazeGenerator().generate()
+
     val x0 = maze.map.keys.fold(Int.MAX_VALUE) { a, b -> min(a, b.first) }
     val x1 = maze.map.keys.fold(Int.MIN_VALUE) { a, b -> max(a, b.first) }
     val width = x1 - x0 + 1
@@ -86,25 +86,83 @@ typealias Coord = Pair<Int, Int>
 
 typealias CoordPair = Pair<Coord, Coord>
 
-class MazeGenerator {
-    val map = mutableMapOf<Coord, RoomType>()
-    val doors = mutableMapOf<CoordPair, DoorType>()
-
-    val startCoord = Coord(0, 0)
+interface MazeInterface {
+    val map: MutableMap<Coord, RoomType>
+    val doors: MutableMap<CoordPair, DoorType>
 
     val roomCount: Int
         get() = map.count()
 
-    fun generate() {
+    fun makeCoordPair(a: Coord, b: Coord): CoordPair = if (a < b) Pair(a, b) else Pair(b, a)
+
+    fun getCoordDegree(coord: Coord): Int =
+        getCoordNear(coord).count {
+            map[it] != null && doors[makeCoordPair(coord, it)]?.countAsDoor == true
+        }
+
+    fun getActualRoomType(coord: Coord): RoomType? {
+        val type = map[coord]
+        if (type == RoomType.PartOfBigD) return getActualRoomType(coord + Coord(0, -1))
+        if (type == RoomType.PartOfBigL) return getActualRoomType(coord + Coord(-1, 0))
+        return type
+    }
+
+    fun getDistances(start: Coord = startCoord): Map<Coord, Int> {
+        if (map.isEmpty()) {
+            return mapOf()
+        }
+        val distance = mutableMapOf<Coord, Int>()
+        var query = mutableListOf(start)
+        distance[start] = 0
+        var count = 1
+        while (query.isNotEmpty()) {
+            val query2 = mutableListOf<Coord>()
+            for (coord in query) {
+                for (coordNear in getCoordNear(coord)) {
+                    if (map[coordNear] == null) continue
+                    if (distance[coordNear] != null) continue
+
+                    val door = doors[makeCoordPair(coord, coordNear)]
+                    if (door == DoorType.Door || door == DoorType.Open) {
+                        distance[coordNear] = count
+                        query2.add(coordNear)
+                    }
+                }
+            }
+            query = query2
+            count += 1
+        }
+        return distance
+    }
+    fun getAllDistances(): Map<Coord, Map<Coord, Int>> {
+        val distances: MutableMap<Coord, Map<Coord, Int>> = mutableMapOf()
+        map.keys.forEach { distances[it] = getDistances(it) }
+        return distances
+    }
+
+    val startCoord: Coord
+        get() = Coord(0, 0)
+
+    /** @return listOf(Top, Right, Bottom, Left) */
+    fun getCoordNear(coord: Coord): List<Coord> =
+        listOf(Coord(0, 1), Coord(1, 0), Coord(0, -1), Coord(-1, 0)).map { coord + it }
+}
+
+// ----- generator -----
+
+class MazeGenerator : MazeInterface {
+    override val map: MutableMap<Coord, RoomType> = mutableMapOf()
+    override val doors: MutableMap<CoordPair, DoorType> = mutableMapOf()
+
+    fun generate(): MazeBuilder {
         while (true) {
             try {
-                tryGenerate()
-                break
-            } catch (_: Throwable) { }
+                return tryGenerate()
+            } catch (_: Throwable) {}
         }
     }
     /** Generate maze in most cases. May throw exception */
-    private fun tryGenerate() {
+    private fun tryGenerate(): MazeBuilder {
         map.clear()
         doors.clear()
         map[startCoord] = RoomType.Start
@@ -118,6 +176,7 @@ class MazeGenerator {
         getDeadEnds(5).forEach {
             map[it] = RoomType.DeadEnd
         }
+        return MazeBuilder(this)
     }
     /** Generate random room while there are fewer than n rooms */
     private fun generateRoomsUpTo(n: Int) {
@@ -127,7 +186,7 @@ class MazeGenerator {
 
             val coordNear = getCoordNear(coord).randomOrNull()
             if (coordNear != null && map[coordNear] == null) {
-                val builder = getRandomRoomBuilderOrNull(coordNear)
+                val builder = getRandomRoomGeneratorOrNull(coordNear)
                 if (builder == null) continue
                 builder.placeRoomContains(this, coordNear, coord)
             }
@@ -136,7 +195,7 @@ class MazeGenerator {
     /** Place boss room connected to the farthest room */
     private fun generateBossRoom() {
         val distance = getDistances()
-        val bossBuilder = BossRoomBuilder()
+        val bossBuilder = BossRoomGenerator()
         val bossCoord =
             map.keys
                 .asSequence()
@@ -193,64 +252,8 @@ class MazeGenerator {
         return posDoors
     }
 
-    // ----- utility -----
-
-    fun makeCoordPair(a: Coord, b: Coord): CoordPair =
-        if (a < b) Pair(a, b) else Pair(b, a)
-
-    /** @return listOf(Top, Right, Bottom, Left) */
-    fun getCoordNear(coord: Coord): List<Coord> =
-        listOf(Coord(0, 1), Coord(1, 0), Coord(0, -1), Coord(-1, 0)).map { coord + it }
-
-    fun getCoordDegree(coord: Coord): Int =
-        getCoordNear(coord).count {
-            map[it] != null && doors[makeCoordPair(coord, it)]?.countAsDoor == true
-        }
-
-    fun getActualRoomType(coord: Coord): RoomType? {
-        val type = map[coord]
-        if (type == RoomType.PartOfBigD)
-            return getActualRoomType(coord + Coord(0, -1))
-        if (type == RoomType.PartOfBigL)
-            return getActualRoomType(coord + Coord(-1, 0))
-        return type
-    }
-
-    fun getDistances(start: Coord = startCoord): Map<Coord, Int> {
-        if (map.isEmpty()) {
-            return mapOf()
-        }
-        val distance = mutableMapOf<Coord, Int>()
-        var query = mutableListOf(start)
-        distance[start] = 0
-        var count = 1
-        while (query.isNotEmpty()) {
-            val query2 = mutableListOf<Coord>()
-            for (coord in query) {
-                for (coordNear in getCoordNear(coord)) {
-                    if (map[coordNear] == null) continue
-                    if (distance[coordNear] != null) continue
-
-                    val door = doors[makeCoordPair(coord, coordNear)]
-                    if (door == DoorType.Door || door == DoorType.Open) {
-                        distance[coordNear] = count
-                        query2.add(coordNear)
-                    }
-                }
-            }
-            query = query2
-            count += 1
-        }
-        return distance
-    }
-    fun getAllDistances(): Map<Coord, Map<Coord, Int>> {
-        val distances: MutableMap<Coord, Map<Coord, Int>> = mutableMapOf()
-        map.keys.forEach { distances[it] = getDistances(it) }
-        return distances
-    }
-
-    private fun getRandomRoomBuilderOrNull(coord: Coord): RoomBuilder? {
-        val entries = RoomBuilderEnum.values().filter { it.builder.canPlace(this, coord) }
+    private fun getRandomRoomGeneratorOrNull(coord: Coord): RoomGenerator? {
+        val entries = RoomGeneratorEnum.values().filter { it.builder.canPlace(this, coord) }
         if (entries.isEmpty()) return null
         if (entries.size == 1) return entries[0].builder
 
@@ -265,34 +268,34 @@ class MazeGenerator {
         return answer.builder
     }
 
-    private enum class RoomBuilderEnum(val weight: Int, val builder: RoomBuilder) {
-        Regular(20, RegularRoomBuilder()),
-        LineH(10 / 2, Long2HRoomBuilder()),
-        LineV(10 / 2, Long2VRoomBuilder()),
-        Square(5, SquareRoomBuilder());
+    private enum class RoomGeneratorEnum(val weight: Int, val builder: RoomGenerator) {
+        Regular(20, RegularRoomGenerator()),
+        LineH(10 / 2, Long2HRoomGenerator()),
+        LineV(10 / 2, Long2VRoomGenerator()),
+        Square(5, SquareRoomGenerator())
     }
 }
 
-fun coordsNear(coord1: Coord, coord2: Coord): Boolean {
-    val c = coord1 - coord2
-    return abs(c.first) + abs(c.second) == 1
-}
-
-interface RoomBuilder {
+interface RoomGenerator {
     fun canPlace(maze: MazeGenerator, coord: Coord) = getPlaceContains(maze, coord) != null
     fun placeRoomContains(maze: MazeGenerator, coord: Coord, prevCoord: Coord) =
         placeRoom(maze, getPlaceContains(maze, coord)!!, prevCoord)
 
     fun getPlaceContains(maze: MazeGenerator, coord: Coord): Coord?
     fun placeRoom(maze: MazeGenerator, coord: Coord, prevCoord: Coord)
+
+    fun isCoordsNear(coord1: Coord, coord2: Coord): Boolean {
+        val c = coord1 - coord2
+        return abs(c.first) + abs(c.second) == 1
+    }
 }
 
-class RegularRoomBuilder : RoomBuilder {
+class RegularRoomGenerator : RoomGenerator {
     override fun getPlaceContains(maze: MazeGenerator, coord: Coord) =
         if (maze.map[coord] == null) coord else null
 
     override fun placeRoom(maze: MazeGenerator, coord: Coord, prevCoord: Coord) {
-        if (!coordsNear(coord, prevCoord))
+        if (!isCoordsNear(coord, prevCoord))
             throw IllegalArgumentException("can't create door to prev room")
         val pair = maze.makeCoordPair(coord, prevCoord)
         maze.doors[pair] = DoorType.Door
@@ -300,12 +303,11 @@ class RegularRoomBuilder : RoomBuilder {
     }
 }
 
-open class RectangleRoomBuilder(
-    val size: Pair<Int, Int>,
-    val roomType: RoomType
-) : RoomBuilder {
+open class RectangleRoomGenerator(val size: Pair<Int, Int>, val roomType: RoomType) :
+    RoomGenerator {
     val contains
-        get() = (0..<size.first).map { x -> (0..<size.second).map { y -> Coord(x, y) } }.flatten()
+        get() =
+            (0 ..< size.first).map { x -> (0 ..< size.second).map { y -> Coord(x, y) } }.flatten()
     override fun getPlaceContains(maze: MazeGenerator, coord: Coord): Coord? {
         if (maze.map[coord] != null) return null
 
@@ -319,7 +321,7 @@ open class RectangleRoomBuilder(
     override fun placeRoom(maze: MazeGenerator, coord: Coord, prevCoord: Coord) {
         contains.forEach {
             val coord0 = coord + it
-            if (coordsNear(coord0, prevCoord)) {
+            if (isCoordsNear(coord0, prevCoord)) {
                 val pair = maze.makeCoordPair(coord0, prevCoord)
                 maze.doors[pair] = DoorType.Door
             }
@@ -340,25 +342,78 @@ open class RectangleRoomBuilder(
     }
 }
 
-class SquareRoomBuilder : RectangleRoomBuilder(
+class SquareRoomGenerator : RectangleRoomGenerator(
     2 to 2,
     RoomType.Square2
 )
 
-class Long2HRoomBuilder : RectangleRoomBuilder(
+class Long2HRoomGenerator : RectangleRoomGenerator(
     2 to 1,
     RoomType.Long2H
 )
 
-class Long2VRoomBuilder : RectangleRoomBuilder(
+class Long2VRoomGenerator : RectangleRoomGenerator(
     1 to 2,
     RoomType.Long2V
 )
 
-class BossRoomBuilder : RectangleRoomBuilder(
+class BossRoomGenerator : RectangleRoomGenerator(
     3 to 3,
     RoomType.Boss3
 )
+
+// ----- builder -----
+
+class MazeBuilder(mazeGenerator: MazeGenerator) : MazeInterface {
+    override val map = mazeGenerator.map
+    override val doors = mazeGenerator.doors
+
+    fun build() {}
+    val builders: Map<RoomType, RoomBuilder> =
+        mapOf(
+            RoomType.Regular to RegularRoomBuilder(),
+            RoomType.Long2H to LongHRoomBuilder(),
+            RoomType.Long2V to LongVRoomBuilder(),
+        )
+}
+
+interface RoomBuilder {
+    var rotation: Int // clockwise
+    var offset: Coord
+
+    fun build()
+}
+
+class RegularRoomBuilder : RoomBuilder {
+    override var rotation = 0
+    override var offset = Coord(0, 0)
+    fun getDoors(): List<DoorType?> {
+        TODO("not implemented")
+    }
+    override fun build() {
+        TODO("not implemented")
+    }
+}
+
+open class LongHRoomBuilder : RoomBuilder {
+    override var rotation = 0
+    override var offset = Coord(0, 0)
+    open fun getDoors(): List<DoorType?> {
+        TODO("not implemented")
+    }
+    override fun build() {
+        TODO("not implemented")
+    }
+}
+
+class LongVRoomBuilder : LongHRoomBuilder() {
+    override var rotation = -1
+    override fun getDoors(): List<DoorType?> {
+        TODO("not implemented")
+    }
+}
+
+// ----- enums -----
 
 enum class RoomType {
     Start,
@@ -376,7 +431,6 @@ enum class RoomType {
 enum class DoorType(val countAsDoor: Boolean) {
     Door(true),
     Open(true),
-//    Wall(false),
     Fake(false),
 }
 
