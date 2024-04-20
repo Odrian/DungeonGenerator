@@ -1,5 +1,5 @@
-@file:Suppress("unused", "MemberVisibilityCanBePrivate", "FoldInitializerAndIfToElvis", "SameParameterValue",
-    "EnumValuesSoftDeprecate"
+@file:Suppress("SameParameterValue",
+    "EnumValuesSoftDeprecate", "unused"
 )
 @file:OptIn(ExperimentalStdlibApi::class)
 
@@ -50,7 +50,8 @@ fun main() {
             RoomType.Boss3 -> "E"
             RoomType.PartOfBigD -> getChar(x, y - 1)
             RoomType.PartOfBigL -> getChar(x - 1, y)
-            else -> " "
+            RoomType.DeadEnd -> "D"
+            null -> " "
         }
     }
 
@@ -60,30 +61,20 @@ fun main() {
 
             val doorType = doorR[y][x]
             when (doorType) {
-                DoorType.Door -> {
-                    print("---")
-                }
-                DoorType.Open -> {
-                    print(getChar(x, y).repeat(3))
-                }
-                else -> {
-                    print("   ")
-                }
+                DoorType.Door -> print("---")
+                DoorType.Open -> print(" ${getChar(x, y)} ")
+                DoorType.Fake -> print("- -")
+                else -> print("   ")
             }
         }
         println()
         for (x in 0..<width) {
             val doorType = doorD[y][x]
             when (doorType) {
-                DoorType.Door -> {
-                    print("|")
-                }
-                DoorType.Open -> {
-                    print(getChar(x, y))
-                }
-                else -> {
-                    print(" ")
-                }
+                DoorType.Door -> print("|")
+                DoorType.Open -> print(getChar(x, y))
+                DoorType.Fake -> print("¦")
+                else -> print(" ")
             }
             print("   ")
         }
@@ -105,26 +96,32 @@ class MazeGenerator {
         get() = map.count()
 
     fun generate() {
+        while (true) {
+            try {
+                tryGenerate()
+                break
+            } catch (_: Throwable) { }
+        }
+    }
+    /** Generate maze in most cases. May throw exception */
+    private fun tryGenerate() {
         map.clear()
         doors.clear()
         map[startCoord] = RoomType.Start
 
         generateRoomsUpTo(20)
         generateBossRoom()
-        generateRoomsUpTo(50)
+        generateRoomsUpTo(60)
         generateLoops(2)
+        generateFakeDoors(2)
 
-/*
-        // add something to dead ends
-        val distances1 = getDistances()
-        val deadends = map.keys
-            .filter { getCoordDegree(it) == 1 }
-            .sortedBy { distances1[it] }
-        // TODO
-*/
+        getDeadEnds(5).forEach {
+            map[it] = RoomType.DeadEnd
+        }
     }
-    private fun generateRoomsUpTo(count: Int) {
-        while (roomCount < count) {
+    /** Generate random room while there are fewer than n rooms */
+    private fun generateRoomsUpTo(n: Int) {
+        while (roomCount < n) {
             val coord = map.keys.random()
             if (getActualRoomType(coord) == RoomType.Boss3) continue
 
@@ -136,8 +133,8 @@ class MazeGenerator {
             }
         }
     }
+    /** Place boss room connected to the farthest room */
     private fun generateBossRoom() {
-        // put boss room in the farthest point
         val distance = getDistances()
         val bossBuilder = BossRoomBuilder()
         val bossCoord =
@@ -150,7 +147,39 @@ class MazeGenerator {
                 .first { bossBuilder.canPlace(this, it.first) }
         bossBuilder.placeRoomContains(this, bossCoord.first, bossCoord.second)
     }
-    private fun generateLoops(loops: Int = 1) {
+    /** n times create the door that creates the longest cycle */
+    private fun generateLoops(n: Int = 1) {
+        val posDoors = getPossibleDoors()
+
+        for (i in 0..<n) {
+            if (posDoors.isEmpty()) break
+
+            val distances = getAllDistances()
+            posDoors.sortBy { -distances[it.first]!![it.second]!! }
+            val pair = posDoors.first()
+            posDoors.remove(pair)
+            doors[pair] = DoorType.Door
+        }
+    }
+    /**  */
+    private fun generateFakeDoors(n: Int) {
+        getPossibleDoors().shuffled().take(n).forEach {
+            doors[it] = DoorType.Fake
+        }
+    }
+    /** @return n further rooms with a single door */
+    private fun getDeadEnds(n: Int): List<Coord> {
+        val distances1 = getDistances()
+        val deadEnds = map.keys
+            .filter { map[it] == RoomType.Regular && getCoordDegree(it) == 1 }
+            // TODO: choose whether to sort or shuffle
+            .sortedBy { -distances1[it]!! }
+
+        if (deadEnds.size < n) throw RuntimeException("bad generation")
+        return deadEnds.take(n)
+    }
+
+    fun getPossibleDoors(): MutableList<CoordPair> {
         val horDoor =
             map.keys.map { makeCoordPair(it, it + Coord(1, 0)) }
         val verDoor =
@@ -161,14 +190,7 @@ class MazeGenerator {
             .filter { getActualRoomType(it.first) != RoomType.Boss3 }
             .filter { getActualRoomType(it.second) != RoomType.Boss3 }
             .toMutableList()
-
-        for (i in 0..<min(loops, posDoors.size)) {
-            val distances = getAllDistances()
-            posDoors.sortBy { -distances[it.first]!![it.second]!! }
-            val pair = posDoors.first()
-            posDoors.remove(pair)
-            doors[pair] = DoorType.Door
-        }
+        return posDoors
     }
 
     // ----- utility -----
@@ -176,12 +198,14 @@ class MazeGenerator {
     fun makeCoordPair(a: Coord, b: Coord): CoordPair =
         if (a < b) Pair(a, b) else Pair(b, a)
 
-    /** return (Top, Right, Bottom, Left) */
+    /** @return listOf(Top, Right, Bottom, Left) */
     fun getCoordNear(coord: Coord): List<Coord> =
         listOf(Coord(0, 1), Coord(1, 0), Coord(0, -1), Coord(-1, 0)).map { coord + it }
 
     fun getCoordDegree(coord: Coord): Int =
-        getCoordNear(coord).filter { map[it] != null }.size
+        getCoordNear(coord).count {
+            map[it] != null && doors[makeCoordPair(coord, it)]?.countAsDoor == true
+        }
 
     fun getActualRoomType(coord: Coord): RoomType? {
         val type = map[coord]
@@ -245,7 +269,7 @@ class MazeGenerator {
         Regular(20, RegularRoomBuilder()),
         LineH(10 / 2, Long2HRoomBuilder()),
         LineV(10 / 2, Long2VRoomBuilder()),
-        Square(5, SquareRoomBuilder())
+        Square(5, SquareRoomBuilder());
     }
 }
 
@@ -339,6 +363,7 @@ class BossRoomBuilder : RectangleRoomBuilder(
 enum class RoomType {
     Start,
     Regular,
+    DeadEnd,
     // BigRooms
     PartOfBigD, // not bottom left of big room
     PartOfBigL,
@@ -348,10 +373,11 @@ enum class RoomType {
     Boss3
 }
 
-enum class DoorType {
-    Door,
-    Open,
-    Wall,
+enum class DoorType(val countAsDoor: Boolean) {
+    Door(true),
+    Open(true),
+//    Wall(false),
+    Fake(false),
 }
 
 // out for unreal
@@ -390,7 +416,3 @@ operator fun Coord.plus(other: Coord): Coord {
 operator fun Coord.minus(other: Coord): Coord {
     return Pair(first - other.first, second - other.second)
 }
-
-fun min(a: Coord, b: Coord) = if (a < b) a else b
-
-fun max(a: Coord, b: Coord) = if (a > b) a else b
